@@ -73,6 +73,65 @@ def build_transform(normalize: bool = True) -> transforms.Compose:
     return transforms.Compose(ops)
 
 
+def build_augment_transform() -> transforms.Compose:
+    """构造训练专用数据增强流程（RandomCrop + HorizontalFlip + ColorJitter）。
+
+    注意：增强操作在 ToTensor 之前应用于 PIL Image。
+    返回的 Compose 在 __getitem__ 中对 [0,1] float32 tensor 生效。
+    """
+    return transforms.Compose([
+        transforms.RandomCrop(96, padding=4, padding_mode="reflect"),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.Normalize(mean=STL10_MEAN, std=STL10_STD),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Augmented dataset（内存缓存原始 [0,1] 图像 + __getitem__ 时做随机增强）
+# ---------------------------------------------------------------------------
+
+
+class AugmentedInMemoryDataset(Dataset):
+    """基于内存中的原始 [0,1] float32 图像张量构造的 Dataset。
+
+    与 InMemoryDataset 的关键区别：
+        - 存储的是未归一化的 [0,1] 图像（仅 ToTensor，无 Normalize）
+        - 在 __getitem__ 中动态应用 augmentation + Normalize，每次索引产生不同的随机变换
+
+    Args:
+        images: 形状为 (N, C, H, W) 的 float32 张量，值域 [0, 1]。
+        labels: 形状为 (N,) 的 long 张量。
+        augment: 数据增强 + 归一化 transform（应用于 tensor）。
+        indices: 可选索引子集；为 None 时使用全部样本。
+    """
+
+    def __init__(
+        self,
+        images: torch.Tensor,
+        labels: torch.Tensor,
+        augment: transforms.Compose,
+        indices: Sequence[int] | None = None,
+    ) -> None:
+        assert images.shape[0] == labels.shape[0], "images / labels 数量必须一致"
+        self.images = images
+        self.labels = labels
+        self.augment = augment
+        if indices is None:
+            self.indices = torch.arange(images.shape[0], dtype=torch.long)
+        else:
+            self.indices = torch.as_tensor(list(indices), dtype=torch.long)
+
+    def __len__(self) -> int:
+        return int(self.indices.numel())
+
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
+        idx = int(self.indices[i].item())
+        img = self.images[idx]  # [0, 1] float32 tensor
+        img = self.augment(img)  # 随机增强 + 归一化
+        return img, self.labels[idx]
+
+
 # ---------------------------------------------------------------------------
 # Memory loader
 # ---------------------------------------------------------------------------
@@ -217,6 +276,115 @@ def _try_load_split(
 # ---------------------------------------------------------------------------
 # DataLoader builders
 # ---------------------------------------------------------------------------
+
+
+def build_augmented_train_valid_loaders(
+    train_root: str | os.PathLike,
+    *,
+    valid_ratio: float = 0.2,
+    batch_size: int = 128,
+    seed: int = 42,
+    num_workers: int = 0,
+    normalize: bool = True,
+    split_index_path: str | os.PathLike | None = None,
+    verbose: bool = True,
+) -> tuple[DataLoader, DataLoader, list[str], dict]:
+    """构造带数据增强的 train / valid DataLoader。
+
+    - train：使用 AugmentedInMemoryDataset（RandomCrop + HorizontalFlip + ColorJitter）
+    - valid：使用 InMemoryDataset（无增强，仅 ToTensor + 可选 Normalize）
+    - 划分逻辑与 build_train_valid_loaders 相同（分层 80/20）
+    """
+    # 加载原始 [0,1] 图像（不做归一化，归一化在 augment transform 中完成）
+    loaded = load_imagefolder_to_memory(
+        train_root, normalize=False, verbose=verbose
+    )
+
+    # 1) 解析或重新生成划分
+    train_idx: list[int] | None = None
+    valid_idx: list[int] | None = None
+    reused = False
+    if split_index_path is not None:
+        cached = _try_load_split(
+            split_index_path,
+            expected_seed=seed,
+            expected_valid_ratio=valid_ratio,
+            expected_classes=loaded.classes,
+        )
+        if cached is not None:
+            train_idx, valid_idx = cached
+            reused = True
+
+    if train_idx is None or valid_idx is None:
+        train_idx, valid_idx = stratified_split_indices(
+            loaded.labels.tolist(), valid_ratio=valid_ratio, seed=seed
+        )
+        if split_index_path is not None:
+            _persist_split(
+                split_index_path,
+                classes=loaded.classes,
+                train_idx=train_idx,
+                valid_idx=valid_idx,
+                seed=seed,
+                valid_ratio=valid_ratio,
+            )
+
+    if verbose:
+        print(
+            f"  [split] reused={reused}, train={len(train_idx)}, valid={len(valid_idx)}, "
+            f"valid_ratio={valid_ratio}, seed={seed}"
+        )
+
+    # 2) 构造 augment transform
+    augment_transform = build_augment_transform()
+
+    # 3) 构造 Dataset：train 用增强版，valid 用预归一化版
+    train_ds = AugmentedInMemoryDataset(
+        loaded.images, loaded.labels, augment=augment_transform, indices=train_idx
+    )
+
+    # valid：需要预先对 loaded.images 做归一化
+    if normalize:
+        norm = transforms.Normalize(mean=STL10_MEAN, std=STL10_STD)
+        valid_images = torch.stack([norm(img) for img in loaded.images])
+    else:
+        valid_images = loaded.images
+    valid_ds = InMemoryDataset(valid_images, loaded.labels, indices=valid_idx)
+
+    g = torch.Generator()
+    g.manual_seed(seed)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=False,
+        drop_last=False,
+        generator=g,
+    )
+    valid_loader = DataLoader(
+        valid_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=False,
+        drop_last=False,
+    )
+
+    info = {
+        "classes": loaded.classes,
+        "class_to_idx": loaded.class_to_idx,
+        "n_train": len(train_idx),
+        "n_valid": len(valid_idx),
+        "valid_ratio": valid_ratio,
+        "seed": seed,
+        "normalize": normalize,
+        "augmentation": True,
+        "reused_split": reused,
+        "split_index_path": str(split_index_path) if split_index_path else None,
+    }
+    return train_loader, valid_loader, loaded.classes, info
 
 
 def build_train_valid_loaders(

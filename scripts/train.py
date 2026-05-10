@@ -1,12 +1,21 @@
-"""BaselineCNN 训练脚本（CPU 优化版）。
+"""CNN 训练脚本（CPU 优化版，支持多模型切换）。
 
 使用示例：
-    python -m scripts.train --epochs 40 --batch-size 128 --lr 0.01 --momentum 0.9 \
+    # 基线模型
+    python -m scripts.train --model models.baseline_cnn.BaselineCNN \
+                            --epochs 40 --batch-size 128 --lr 0.01 --momentum 0.9 \
                             --optimizer sgd --early-stop-patience 8 \
                             --output-dir outputs/baseline --seed 42
 
+    # 带数据增强
+    python -m scripts.train --model models.augmented_cnn.AugmentedCNN --use-augmentation \
+                            --output-dir outputs/augmented --seed 42
+
+    # 其他模型
+    python -m scripts.train --model models.dropout_cnn.DropoutCNN \
+                            --output-dir outputs/dropout --seed 42
+
 合规承诺：
-    - 严禁使用 Dropout / BatchNorm / weight_decay / 数据增强 / label smoothing
     - 严禁在训练 / 验证过程中接触 STL10/test/ 下任何数据
 """
 
@@ -14,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import json
 import logging
 import os
@@ -32,8 +42,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from data.stl10_dataset import build_train_valid_loaders  # noqa: E402
-from models.baseline_cnn import BaselineCNN, count_parameters  # noqa: E402
+from data.stl10_dataset import (  # noqa: E402
+    build_augmented_train_valid_loaders,
+    build_train_valid_loaders,
+)
+from models.baseline_cnn import count_parameters  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +56,10 @@ from models.baseline_cnn import BaselineCNN, count_parameters  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train BaselineCNN on STL-10 (no Dropout / BN, CPU-friendly)."
+        description="Train CNN on STL-10 (supports --model for different architectures)."
     )
+    parser.add_argument("--model", type=str, default="models.baseline_cnn.BaselineCNN",
+                        help="模型类路径，格式 module.ClassName（如 models.dropout_cnn.DropoutCNN）")
     parser.add_argument("--data-root", type=str, default="STL10/train",
                         help="STL-10 训练集目录（仅训练 + 验证使用，不含 test）")
     parser.add_argument("--output-dir", type=str, default="outputs/baseline",
@@ -53,15 +68,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--momentum", type=float, default=0.9,
-                        help="SGD 动量；--optimizer adam 时忽略")
-    parser.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "adam"],
-                        help="baseline 默认使用 SGD；Adam 留作后续对比实验")
+                        help="SGD 动量；--optimizer sgd 以外时忽略")
+    parser.add_argument("--optimizer", type=str, default="sgd",
+                        choices=["sgd", "adam", "rmsprop"],
+                        help="优化器类型：sgd / adam / rmsprop")
     parser.add_argument("--valid-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0,
                         help="数据已在内存，建议 0（Windows 友好）")
     parser.add_argument("--no-normalize", action="store_true",
                         help="禁用通道均值方差标准化（仅 ToTensor）")
+    parser.add_argument("--use-augmentation", action="store_true",
+                        help="启用数据增强（RandomCrop + HorizontalFlip + ColorJitter）")
     parser.add_argument("--early-stop-patience", type=int, default=8,
                         help="valid_acc 连续未刷新最高值的最大 epoch 数；<=0 关闭早停")
     parser.add_argument("--threads", type=int, default=0,
@@ -152,6 +170,16 @@ def _run_epoch(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_model_cls(model_path: str) -> type[nn.Module]:
+    """从 'module.ClassName' 路径动态导入模型类。"""
+    parts = model_path.rsplit(".", 1)
+    if len(parts) != 2:
+        raise ValueError(f"无效的 --model 格式：'{model_path}'，应为 module.ClassName")
+    module_name, cls_name = parts
+    module = importlib.import_module(module_name)
+    return getattr(module, cls_name)
+
+
 def main() -> None:
     args = _parse_args()
     output_dir = Path(args.output_dir)
@@ -159,7 +187,7 @@ def main() -> None:
 
     logger = _setup_logger(output_dir / "train.log")
     logger.info("=" * 70)
-    logger.info("BaselineCNN training (no Dropout / BN, CPU-friendly)")
+    logger.info("CNN training (model=%s)", args.model)
     logger.info("=" * 70)
     logger.info("args = %s", vars(args))
 
@@ -178,23 +206,36 @@ def main() -> None:
     # ---- 2) 数据 ----
     logger.info("loading dataset into memory ...")
     t0 = time.time()
-    train_loader, valid_loader, classes, split_info = build_train_valid_loaders(
-        train_root=args.data_root,
-        valid_ratio=args.valid_ratio,
-        batch_size=args.batch_size,
-        seed=args.seed,
-        num_workers=args.num_workers,
-        normalize=(not args.no_normalize),
-        split_index_path=output_dir / "split_index.json",
-        verbose=True,
-    )
+    if args.use_augmentation:
+        train_loader, valid_loader, classes, split_info = build_augmented_train_valid_loaders(
+            train_root=args.data_root,
+            valid_ratio=args.valid_ratio,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            num_workers=args.num_workers,
+            normalize=(not args.no_normalize),
+            split_index_path=output_dir / "split_index.json",
+            verbose=True,
+        )
+    else:
+        train_loader, valid_loader, classes, split_info = build_train_valid_loaders(
+            train_root=args.data_root,
+            valid_ratio=args.valid_ratio,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            num_workers=args.num_workers,
+            normalize=(not args.no_normalize),
+            split_index_path=output_dir / "split_index.json",
+            verbose=True,
+        )
     logger.info("dataset ready in %.1fs | classes=%s", time.time() - t0, classes)
     logger.info("split_info = %s", split_info)
 
     # ---- 3) 模型 / 损失 / 优化器 ----
-    model = BaselineCNN(num_classes=len(classes)).to(device)
+    ModelCls = _resolve_model_cls(args.model)
+    model: nn.Module = ModelCls(num_classes=len(classes)).to(device)
     n_params = count_parameters(model)
-    logger.info("model = BaselineCNN | trainable params = %s", f"{n_params:,}")
+    logger.info("model = %s | trainable params = %s", ModelCls.__name__, f"{n_params:,}")
 
     criterion = nn.CrossEntropyLoss()
     if args.optimizer == "sgd":
@@ -202,10 +243,14 @@ def main() -> None:
             model.parameters(),
             lr=args.lr,
             momentum=args.momentum,
-            weight_decay=0.0,  # 显式禁用 L2 正则
+            weight_decay=0.0,
         )
-    else:  # adam
+    elif args.optimizer == "adam":
         optimizer = torch.optim.Adam(
+            model.parameters(), lr=args.lr, weight_decay=0.0
+        )
+    else:  # rmsprop
+        optimizer = torch.optim.RMSprop(
             model.parameters(), lr=args.lr, weight_decay=0.0
         )
     logger.info("optimizer = %s", optimizer)

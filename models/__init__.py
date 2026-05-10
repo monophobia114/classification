@@ -2,4 +2,8 @@
 
 from .baseline_cnn import BaselineCNN, count_parameters
 
-__all__ = ["BaselineCNN", "count_parameters"]
+__all__ = [
+    "BaselineCNN",
+    "count_parameters",
+]
+

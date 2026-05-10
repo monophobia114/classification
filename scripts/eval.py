@@ -1,7 +1,8 @@
 """在 STL-10 test 集上评估训练好的模型，输出完整分类报告与混淆矩阵。
 
 使用示例：
-    python -m scripts.eval --checkpoint outputs/baseline/best_model.pt \
+    python -m scripts.eval --model models.baseline_cnn.BaselineCNN \
+                           --checkpoint outputs/baseline/best_model.pt \
                            --data-root  STL10/test \
                            --output-dir outputs/baseline
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import json
 import sys
 import time
@@ -24,6 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import (
     classification_report,
@@ -39,7 +42,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from data.stl10_dataset import build_test_loader  # noqa: E402
-from models.baseline_cnn import BaselineCNN  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +51,11 @@ from models.baseline_cnn import BaselineCNN  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate BaselineCNN on STL-10 test set; "
+        description="Evaluate CNN on STL-10 test set; "
                     "produce classification report & confusion matrix."
     )
+    parser.add_argument("--model", type=str, default="models.baseline_cnn.BaselineCNN",
+                        help="模型类路径，格式 module.ClassName（必须与训练时一致）")
     parser.add_argument("--checkpoint", type=str,
                         default="outputs/baseline/best_model.pt")
     parser.add_argument("--data-root", type=str, default="STL10/test",
@@ -284,6 +288,16 @@ def _load_checkpoint_classes(ckpt: dict, fallback: list[str]) -> list[str]:
     return list(fallback)
 
 
+def _resolve_model_cls(model_path: str) -> type[nn.Module]:
+    """从 'module.ClassName' 路径动态导入模型类。"""
+    parts = model_path.rsplit(".", 1)
+    if len(parts) != 2:
+        raise ValueError(f"无效的 --model 格式：'{model_path}'，应为 module.ClassName")
+    module_name, cls_name = parts
+    module = importlib.import_module(module_name)
+    return getattr(module, cls_name)
+
+
 def main() -> None:
     args = _parse_args()
     out_dir = Path(args.output_dir)
@@ -313,7 +327,8 @@ def main() -> None:
             f"using checkpoint order: {classes}"
         )
 
-    model = BaselineCNN(num_classes=len(classes)).to(device)
+    ModelCls = _resolve_model_cls(args.model)
+    model = ModelCls(num_classes=len(classes)).to(device)
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
     model.load_state_dict(state)
 
