@@ -2,10 +2,6 @@
 
 将 BaselineCNN 中的 4 个 MaxPool2d 全部替换为 AvgPool2d，其余架构完全相同。
 
-对比重点（vs baseline MaxPool）：
-    - valid_acc / test_acc：AvgPool 是否保留更多空间细节
-    - 过拟合程度：AvgPool 自带平滑效应能否轻微抑制过拟合
-    - per_class_errors：不同池化方式对各类别的影响差异
 """
 
 from __future__ import annotations

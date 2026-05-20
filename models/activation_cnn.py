@@ -7,10 +7,6 @@
 权重初始化从 Kaiming 改为 Xavier（Glorot），因为 Kaiming 专为 ReLU 设计，
 对 Sigmoid/Tanh 不适用。
 
-对比重点（vs baseline ReLU）：
-    - 梯度消失程度：初期 loss 下降速度
-    - 最终 valid_acc / test_acc 天花板
-    - epoch-to-best 收敛速度
 """
 
 from __future__ import annotations

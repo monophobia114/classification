@@ -4,10 +4,6 @@
 训练时通过 `python -m scripts.train --model models.augmented_cnn.AugmentedCNN --use-augmentation`
 启用 RandomCrop + HorizontalFlip + ColorJitter 数据增强。
 
-对比重点（vs baseline）：
-    - 过拟合程度：train/valid loss 差距是否缩小
-    - valid_acc / test_acc 是否提升
-    - best epoch 是否后移（增强通常让收敛更慢但更稳）
 """
 
 from .baseline_cnn import BaselineCNN

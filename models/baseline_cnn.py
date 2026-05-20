@@ -1,6 +1,6 @@
 """STL-10 baseline CNN 模型定义。
 
-设计要点（详见 plans/baseline_cnn_design.md）：
+设计要点：
     - 输入：RGB 图像，形状 (N, 3, 96, 96)
     - 3 个卷积层 + 4 个最大池化层 + 2 个全连接层
     - 严格不含任何正则化 / 归一化（无 Dropout、无 BatchNorm、无 weight decay）

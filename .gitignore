@@ -2,4 +2,8 @@
 /plans
 /STL10
 /人工智能原理课程项目2.pdf
+/报告要求.md
+/实验报告.md
 __pycache__/
+*.pyc
+**/__pycache__/

@@ -6,10 +6,6 @@
 
 架构：Conv2d → BatchNorm2d → ReLU → MaxPool2d → ... → FC1 → ReLU → Dropout(0.3) → FC2
 
-对比重点：
-    - test_acc：组合是否优于单独 Dropout 和单独 BN
-    - overfitting gap：双层正则化下过拟合抑制效果
-    - 收敛稳定性：两种技术叠加是否带来不稳定性
 """
 
 from __future__ import annotations

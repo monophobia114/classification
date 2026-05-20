@@ -2,11 +2,6 @@
 
 在 BaselineCNN 的 FC1 → ReLU 之后添加 Dropout(p=0.5)，以抑制过拟合。
 
-对比重点（vs baseline）：
-    - 过拟合改善：valid_loss 在 epoch 10+ 后是否不再持续上升
-    - train/valid accuracy 差距是否缩小
-    - test_acc 是否提升
-    - best epoch 是否后移（Dropout 通常需要更多 epoch 收敛）
 """
 
 from __future__ import annotations

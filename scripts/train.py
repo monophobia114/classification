@@ -82,13 +82,8 @@ def _parse_args() -> argparse.Namespace:
                         help="启用数据增强（RandomCrop + HorizontalFlip + ColorJitter）")
     parser.add_argument("--early-stop-patience", type=int, default=8,
                         help="valid_acc 连续未刷新最高值的最大 epoch 数；<=0 关闭早停")
-    parser.add_argument("--lr-scheduler", type=str, default="none",
-                        choices=["none", "step", "cosine", "plateau"],
-                        help="学习率调度器：none(恒定LR) / step(StepLR) / cosine(CosineAnnealingLR) / plateau(ReduceLROnPlateau)")
-    parser.add_argument("--lr-step-size", type=int, default=10,
-                        help="StepLR 的 step_size（每 N 个 epoch 衰减一次）")
-    parser.add_argument("--lr-gamma", type=float, default=0.1,
-                        help="StepLR / ReduceLROnPlateau 的 gamma（衰减因子）")
+    parser.add_argument("--cosine-lr", action="store_true",
+                        help="启用 CosineAnnealingLR：LR ∝ cos(π/2 × epoch/T_max)；默认关闭（恒定 LR）")
     parser.add_argument("--threads", type=int, default=0,
                         help="torch.set_num_threads 的取值；0=使用 os.cpu_count()")
     return parser.parse_args()
@@ -264,24 +259,11 @@ def main() -> None:
 
     # ---- 3.5) 学习率调度器 ----
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
-    scheduler_step_on_loss = False  # ReduceLROnPlateau 需要传 valid_loss
-    if args.lr_scheduler == "step":
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma
-        )
-        logger.info("lr_scheduler = StepLR(step_size=%d, gamma=%.2f)", args.lr_step_size, args.lr_gamma)
-    elif args.lr_scheduler == "cosine":
+    if args.cosine_lr:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=args.epochs
         )
-        logger.info("lr_scheduler = CosineAnnealingLR(T_max=%d)", args.epochs)
-    elif args.lr_scheduler == "plateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=args.lr_gamma, patience=5,
-            verbose=True,
-        )
-        scheduler_step_on_loss = True
-        logger.info("lr_scheduler = ReduceLROnPlateau(mode=min, factor=%.2f, patience=5)", args.lr_gamma)
+        logger.info("lr_scheduler = CosineAnnealingLR(T_max=%d) — LR ∝ cos(π/2 × epoch/T_max)", args.epochs)
 
     # ---- 4) 持久化训练配置 ----
     config = {
@@ -332,10 +314,7 @@ def main() -> None:
 
         # 学习率调度
         if scheduler is not None:
-            if scheduler_step_on_loss:
-                scheduler.step(valid_loss)
-            else:
-                scheduler.step()
+            scheduler.step()
 
         with open(metrics_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([

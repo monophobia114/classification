@@ -4,10 +4,6 @@
 
 架构：Conv2d → BatchNorm2d → ReLU → MaxPool2d
 
-对比重点（vs baseline）：
-    - 收敛速度：epoch-to-best 是否大幅缩短
-    - train/valid loss 曲线平滑度：BN 训练更稳定
-    - valid_acc / test_acc 天花板：归一化是否提升精度上限
 """
 
 from __future__ import annotations
